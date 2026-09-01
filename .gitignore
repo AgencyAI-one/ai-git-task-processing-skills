@@ -1,0 +1,16 @@
+# AI Git Task Processing Skills ignore rules
+# Author: Bohdan Kossak
+# X: https://x.com/BohdanDJA
+# License: MIT
+
+# Local environment and editor files
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.swp
+*~
+
+# Local AI tool settings
+.claude/settings.local.json

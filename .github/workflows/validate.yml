@@ -1,0 +1,25 @@
+# AI Git Task Processing Skills CI
+# Author: Bohdan Kossak
+# X: https://x.com/BohdanDJA
+# License: MIT
+
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate skills and scripts
+        run: ./scripts/validate.sh
