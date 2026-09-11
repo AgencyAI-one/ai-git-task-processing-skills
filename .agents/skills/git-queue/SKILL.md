@@ -1,6 +1,6 @@
 ---
 name: git-queue
-description: Continuously process GitHub Project issues in manual Ready-column order by waiting for the next issue and invoking the git-job workflow one issue at a time. Use only when the user explicitly asks to run the ongoing queue; do not use for a single issue.
+description: Continuously process GitHub Project issues in manual Ready-column order by waiting for the next issue and invoking the git-job workflow one issue at a time. Use only when the user explicitly asks to run the ongoing queue; do not use for a single issue. This interactive mode keeps one agent conversation; for Codex fresh-context-per-task automation use scripts/codex-git-queue.sh instead.
 license: MIT
 metadata:
   author: "Bohdan Kossak"
@@ -19,6 +19,8 @@ metadata:
 Operate continuously until the user explicitly interrupts the session.
 
 The queue selects work. The `git-job` skill executes one selected issue.
+
+> Codex note: this interactive skill keeps the queue in the current Codex conversation. For a genuinely fresh Codex context for every issue, run `scripts/codex-git-queue.sh` from the target repository root instead. That runner starts a separate ephemeral `codex exec` for each selected issue and invokes `$git-job <ISSUE_URL>`.
 
 ## Requirements
 
@@ -41,7 +43,7 @@ Repeat until the user interrupts:
 
 3. When the command returns a GitHub issue URL, process exactly that issue using the `git-job` skill.
 
-4. Fully finish the current task before looking for another one.
+4. Fully finish the current task before looking for another one. `git-job` must leave the checkout back on the branch that was active before that task, whether the task completed or followed the blocked workflow.
 
 5. As soon as the issue either reaches the configured review status or follows the `git-job` blocked workflow, return to step 1.
 
@@ -51,6 +53,7 @@ Repeat until the user interrupts:
 - Use only the URL returned by `git-wait-ready-task.sh`.
 - Preserve the manual top-to-bottom GitHub Project order.
 - Do not combine unrelated issues in one implementation.
+- Start every issue from the restored integration branch, never from the previous issue's task branch.
 - Do not stop after a successful or blocked issue and do not ask whether to continue.
 - When no matching issue exists, keep waiting rather than ending the session.
 - Stop only when the user interrupts the queue or continuing becomes unsafe.
