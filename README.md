@@ -157,6 +157,12 @@ export IN_PROGRESS_STATUS="In Progress"
 export IN_REVIEW_STATUS="In Review"
 export POLL_SECONDS="20"
 export TASK_COMMENT_LANGUAGE="English"
+
+
+export DEV_SERVER_RESTART_COMMAND='pm2 restart my-app' 
+export DEV_SERVER_CHECK_COMMAND='curl -f http://localhost:3000'
+export CODEX_QUEUE_MAX_TASKS=1 
+./scripts/codex-git-queue.sh
 ```
 
 Only `PROJECT_OWNER` and `PROJECT_NUMBER` are required. The other queue/status values shown above are defaults except `TASK_COMMENT_LANGUAGE`, which otherwise follows the issue language and falls back to English.
