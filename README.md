@@ -14,45 +14,76 @@
   </p>
 </div>
 
-This small open-source toolkit gives Claude Code and Codex two shared skills:
+This open-source toolkit gives Claude Code and Codex two shared skills plus a Codex queue runner:
 
 - `git-queue` watches a GitHub Projects v2 board and selects the first open issue in the `Ready` status.
-- `git-job` investigates that issue, implements it, runs the relevant checks, reports the outcome, and moves completed work to `In Review`.
+- `git-job` executes one issue end to end on an isolated task branch, validates it, integrates completed work back into the branch that was active before the task, restores local development services, reports the result, and moves completed work to `In Review`.
+- `scripts/codex-git-queue.sh` is the recommended long-running Codex mode. It starts a fresh ephemeral Codex context for every issue so context from previous tasks does not accumulate.
 
 Tasks are processed one at a time and in the same top-to-bottom order you set in GitHub Projects.
 
-> Want to create and organize tasks by voice first? Pair these skills with [Git Master](https://github.com/AgencyAI-one/GIT_Master), an open-source voice-first GitHub issue and project manager. Dictate an issue in Git Master, move it to `Ready`, and let this queue workflow take it from there.
+> Want to create and organize tasks by voice first? Pair these skills with [Git Master](https://github.com/AgencyAI-one/GIT_Master), an open-source voice-first GitHub issue and project manager. Dictate an issue in Git Master, move it to `Ready`, and let this workflow take it from there.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     A[Create or refine an issue] --> B[Move it to Ready]
-    B --> C[git-queue selects the top issue]
-    C --> D[git-job implements and validates it]
-    D --> E[Move it to In Review]
-    D --> F[Keep In Progress and explain a blocker]
+    B --> C[Queue selects top Ready issue]
+    C --> D[Fresh Codex context]
+    D --> E[Create task branch]
+    E --> F[Implement + test + local dev validation]
+    F --> G{Completed?}
+    G -->|Yes| H[Merge/integrate into original dev branch]
+    G -->|Blocked| I[Keep partial work on task branch]
+    H --> J[Return to original branch + restart/check local dev]
+    I --> J
+    J --> K[Next Ready issue]
 ```
 
-The queue skill never implements multiple issues at once. The job skill never selects the next issue. Keeping those responsibilities separate makes the behavior easier to understand and control.
+The queue layer selects work. The `git-job` skill executes exactly one selected issue. Keeping those responsibilities separate prevents one task from silently spilling into the next.
+
+## Task branch lifecycle
+
+For every issue, `git-job` treats the branch that was active before the task as the integration/base branch. For example, if you start the queue on `dev_01`, the expected lifecycle is:
+
+```text
+dev_01
+  -> Ready issue #123
+  -> fresh Codex context
+  -> create/switch to ai/issue-123-short-slug
+  -> implement + test + local dev validation
+  -> completed: merge/integrate into dev_01
+     blocked: keep partial work on task branch, do not merge
+  -> switch back to dev_01
+  -> restart/check local dev server when configured
+  -> next issue starts from dev_01 in another fresh Codex context
+```
+
+Important behavior:
+
+- new issue work should not be implemented directly on the development branch;
+- completed and validated work returns to the branch that was active before the task;
+- blocked or incomplete work stays isolated on its task branch and is not merged;
+- the local checkout must return to the original branch before another issue starts;
+- the queue stops instead of starting another issue if it cannot safely restore the original branch/worktree state;
+- repository branch protection and PR-only policies are respected. If direct merge is not allowed, the job creates or updates the required PR instead of bypassing policy.
 
 ## Requirements
 
-- A Linux or macOS shell with Bash
+- Linux or macOS with Bash
 - [Git](https://git-scm.com/)
 - [GitHub CLI](https://cli.github.com/) (`gh`)
 - [jq](https://jqlang.github.io/jq/)
-- A GitHub Projects v2 board with a `Status` field
+- a GitHub Projects v2 board with a `Status` field
 - [Claude Code](https://code.claude.com/docs/en/overview) or [Codex](https://developers.openai.com/codex)
-- Permission to read issues and update the target repository and project
+- permission to read issues and update the target repository and project
 
-The repository follows the official project-skill locations for [Claude Code](https://code.claude.com/docs/en/skills) and [Codex](https://developers.openai.com/codex/skills).
+The repository follows the official project-skill locations for Claude Code and Codex.
 
 ## Quick start
 
-### 1. Install the skills into your project
-
-Clone this repository, then run its installer with the path to the repository where the agent will work:
+### 1. Install into your target repository
 
 ```bash
 git clone https://github.com/AgencyAI-one/ai-git-task-processing-skills.git
@@ -71,7 +102,8 @@ your-project/
 │   ├── git-job/SKILL.md
 │   └── git-queue/SKILL.md
 └── scripts/
-    └── git-wait-ready-task.sh
+    ├── git-wait-ready-task.sh
+    └── codex-git-queue.sh
 ```
 
 Existing files are never overwritten unless you explicitly pass `--force`:
@@ -80,7 +112,7 @@ Existing files are never overwritten unless you explicitly pass `--force`:
 ./scripts/install.sh --force /path/to/your-project
 ```
 
-Commit the installed files in the target repository so every local agent session can discover them.
+Commit the installed files in the target repository so local agent sessions can discover them.
 
 ### 2. Authenticate GitHub CLI
 
@@ -92,30 +124,30 @@ gh auth status
 
 Use the least-privileged GitHub account and token that can access the intended repository and project. Organization projects may require organization approval.
 
-### 3. Find the project number
+### 3. Find the GitHub Project number
 
-The project number is not the project ID. List projects owned by your user or organization:
+The project number is not the project ID:
 
 ```bash
 gh project list --owner YOUR_GITHUB_OWNER
 ```
 
-Example output:
+Example:
 
 ```text
 NUMBER  TITLE
 3       Development
 ```
 
-You can inspect its fields and exact status option names with:
+Inspect fields and exact status names with:
 
 ```bash
 gh project field-list 3 --owner YOUR_GITHUB_OWNER --format json
 ```
 
-### 4. Configure the session
+### 4. Configure the queue
 
-Run these commands in the same terminal where you will start Claude Code or Codex:
+Run these in the same terminal from which the worker will be started:
 
 ```bash
 export PROJECT_OWNER="YOUR_GITHUB_OWNER"
@@ -127,51 +159,121 @@ export POLL_SECONDS="20"
 export TASK_COMMENT_LANGUAGE="English"
 ```
 
-Only `PROJECT_OWNER` and `PROJECT_NUMBER` are required. The other values shown are defaults, except `TASK_COMMENT_LANGUAGE`: when it is unset, the job uses the issue's language and falls back to English.
+Only `PROJECT_OWNER` and `PROJECT_NUMBER` are required. The other queue/status values shown above are defaults except `TASK_COMMENT_LANGUAGE`, which otherwise follows the issue language and falls back to English.
 
-### 5. Test the queue connection
+### 5. Optional: configure the local development server
 
-From the target project root, run:
+For web projects, define an explicit safe command for restarting or starting the local development server after branch changes:
+
+```bash
+export DEV_SERVER_RESTART_COMMAND='YOUR_REPOSITORY_SPECIFIC_RESTART_COMMAND'
+```
+
+Optionally define a readiness/smoke command:
+
+```bash
+export DEV_SERVER_CHECK_COMMAND='YOUR_REPOSITORY_SPECIFIC_CHECK_COMMAND'
+```
+
+Examples depend on the target repository. Prefer its existing scripts, process manager, Docker Compose setup, Make target, or documented development command. The skill deliberately does not guess a port and kill arbitrary processes.
+
+If reliable hot reload already follows checked-out files and no restart is necessary, you can leave these variables unset.
+
+### 6. Test the queue connection
+
+From the target repository root:
 
 ```bash
 ./scripts/git-wait-ready-task.sh
 ```
 
-If a matching issue exists, the command prints its URL and exits. If the queue is empty, it keeps checking at the configured interval. Press `Ctrl+C` to stop the test.
+If a matching issue exists, the command prints its URL and exits. If the queue is empty, it keeps polling. Press `Ctrl+C` to stop the test.
 
-### 6. Start the agent
+## Recommended Codex mode: fresh context for every task
 
-Start your preferred CLI from the target project root.
+Start from the development branch that should receive completed work. For example:
 
-For Claude Code:
+```bash
+git switch dev_01
+./scripts/codex-git-queue.sh
+```
+
+This is the recommended way to run a long-lived Codex worker.
+
+The runner repeatedly:
+
+1. records the currently checked-out branch as the base branch for the next task;
+2. waits for the first Ready issue;
+3. starts a new `codex exec --ephemeral` invocation;
+4. explicitly invokes `$git-job <ISSUE_URL>`;
+5. passes the original branch through `GIT_JOB_BASE_BRANCH`;
+6. verifies that the repository returns to that original branch after the task;
+7. refuses to continue if branch/worktree restoration is unsafe;
+8. starts the next issue in another fresh Codex context.
+
+It intentionally does not use `codex exec resume`, so previous issue conversation context is not reused.
+
+You can keep it visible in `tmux`:
+
+```bash
+tmux new -s codex-worker
+./scripts/codex-git-queue.sh
+```
+
+Detach with your normal tmux key sequence and reconnect later with:
+
+```bash
+tmux attach -t codex-worker
+```
+
+### Codex runner options
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `CODEX_SANDBOX` | No | `workspace-write` | Sandbox passed to `codex exec` |
+| `CODEX_NETWORK_ACCESS` | No | `true` | Network access for `workspace-write` sandbox |
+| `CODEX_PROFILE` | No | — | Optional Codex CLI profile |
+| `CODEX_RETRY_SECONDS` | No | `10` | Delay after a failed Codex invocation |
+| `CODEX_QUEUE_MAX_TASKS` | No | `0` | Stop after N tasks; `0` means continuous |
+
+For a one-task test of the runner:
+
+```bash
+export CODEX_QUEUE_MAX_TASKS=1
+./scripts/codex-git-queue.sh
+```
+
+## Interactive queue mode
+
+You can still use the skills directly inside an interactive CLI session.
+
+Claude Code:
 
 ```bash
 claude
 ```
 
-Then invoke:
+then:
 
 ```text
 /git-queue
 ```
 
-For Codex:
+Codex:
 
 ```bash
 codex
 ```
 
-Then invoke:
+then:
 
 ```text
 $git-queue
 ```
 
-Leave the session running. The poller waits when the queue is empty, and the agent starts the next issue only after the current issue is ready for review or has been documented as blocked.
+This mode keeps the queue inside one interactive conversation. It is convenient for supervised operation, but conversation context can accumulate across issues. For unattended or long-running Codex queues, prefer `./scripts/codex-git-queue.sh`.
 
-## Process one issue without the queue
-
-You can run the job skill directly with a GitHub issue URL.
+## Process one issue manually
 
 Claude Code:
 
@@ -185,21 +287,25 @@ Codex:
 $git-job https://github.com/OWNER/REPOSITORY/issues/123
 ```
 
-This is useful for testing the workflow before enabling continuous queue processing.
+`git-job` records the current branch before starting, creates/reuses a dedicated issue branch, performs the work, and returns to the recorded branch when it finishes or documents a blocker.
 
-## Configuration
+## Configuration reference
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `PROJECT_OWNER` | Yes | — | GitHub user or organization that owns the project |
+| `PROJECT_OWNER` | Yes | — | GitHub user or organization that owns the Project |
 | `PROJECT_NUMBER` | Yes | — | GitHub Projects v2 number |
 | `READY_STATUS` | No | `Ready` | Status searched by the queue poller |
 | `IN_PROGRESS_STATUS` | No | `In Progress` | Status used when implementation starts |
-| `IN_REVIEW_STATUS` | No | `In Review` | Status used after successful validation |
+| `IN_REVIEW_STATUS` | No | `In Review` | Status used after successful validation/integration |
 | `POLL_SECONDS` | No | `20` | Positive polling interval in seconds |
-| `TASK_COMMENT_LANGUAGE` | No | Issue language | Language used for final and blocker comments |
+| `TASK_COMMENT_LANGUAGE` | No | Issue language | Language used for final/blocker comments |
+| `GIT_JOB_BASE_BRANCH` | No | Current branch | Integration branch for one job; normally set by the Codex runner |
+| `TASK_BRANCH_PREFIX` | No | `ai/issue-` | Prefix for task branches |
+| `DEV_SERVER_RESTART_COMMAND` | No | — | Safe repository-specific local dev restart/start command |
+| `DEV_SERVER_CHECK_COMMAND` | No | — | Optional local dev readiness/smoke command |
 
-Status names should match your GitHub Project options exactly.
+Status names must match the GitHub Project options exactly.
 
 ## Using it with Git Master
 
@@ -207,36 +313,39 @@ Status names should match your GitHub Project options exactly.
 
 1. Use voice, text, screenshots, and attachments in Git Master to create a complete GitHub issue.
 2. Review the issue and place it in your project's `Ready` status.
-3. `git-queue` detects the highest-priority ready issue.
-4. `git-job` implements and validates it in the code repository.
-5. Review the resulting branch or pull request when the issue reaches `In Review`.
+3. The queue detects the highest-priority Ready issue.
+4. A fresh Codex context starts for that issue when using `codex-git-queue.sh`.
+5. `git-job` creates a task branch, implements and validates the issue, and integrates completed work back into the original development branch.
+6. Review the result when the issue reaches `In Review`.
 
-Git Master is optional; issues created directly in GitHub work exactly the same way.
+Git Master is optional; issues created directly in GitHub work the same way.
 
 ## Safety and operating model
 
-These skills can modify source code, create commits and pull requests, comment on issues, and update project statuses. Review the skill files before using them and begin with the normal permission mode of your agent CLI.
-
-For unattended operation, configure narrowly scoped permissions for a trusted repository and account. Avoid broad permission-bypass modes on machines or repositories that contain unrelated credentials, private data, or production access.
+These skills can modify source code, create branches and commits, create or update pull requests, comment on issues, merge completed work when repository policy allows it, restart explicitly configured development services, and update project statuses.
 
 The workflow deliberately:
 
 - handles one issue at a time;
 - scopes project updates to `PROJECT_OWNER` and `PROJECT_NUMBER`;
+- creates an isolated task branch for new issue work;
 - preserves unrelated worktree changes;
+- does not merge incomplete or blocked task work into the development branch;
+- returns the checkout to the pre-task branch before the next issue;
 - moves an issue to review only after the main work is complete and validated;
 - leaves blocked work in progress and explains what is needed;
-- ignores closed issues, draft project items, and pull-request cards in the Ready queue.
+- ignores closed issues, draft project items, and pull-request cards in the Ready queue;
+- respects repository PR requirements and branch protection instead of bypassing them.
+
+For unattended operation, use narrowly scoped permissions for a trusted repository and account. Avoid broad permission-bypass modes on machines or repositories that contain unrelated credentials, private data, or production access.
 
 ## Troubleshooting
 
 ### The skill does not appear
 
-Confirm that you started the CLI from the target repository and that the skill exists in `.claude/skills` or `.agents/skills`. If those top-level directories were created after the session started, restart the CLI.
+Confirm that you started the CLI from the target repository and that the skill exists in `.claude/skills` or `.agents/skills`. If those directories were added after the session started, restart the CLI.
 
 ### GitHub CLI reports a scope error
-
-Refresh the project scope and verify the active account:
 
 ```bash
 gh auth refresh -s project
@@ -247,16 +356,27 @@ Also confirm that the account can access the target repository and organization 
 
 ### The poller finds no issue
 
-Check all four items:
+Check that:
 
-1. `PROJECT_OWNER` is the login that owns the project, not necessarily the repository owner.
-2. `PROJECT_NUMBER` is the number shown by `gh project list`.
-3. `READY_STATUS` exactly matches a Status option.
-4. The project item is an open GitHub issue, not a draft issue or pull request.
+1. `PROJECT_OWNER` owns the GitHub Project;
+2. `PROJECT_NUMBER` is the number shown by `gh project list`;
+3. `READY_STATUS` exactly matches a Status option;
+4. the Project item is an open GitHub issue, not a draft issue or pull request.
 
-### Work remains in progress
+### The queue stops after a task
 
-That is expected when the agent finds a blocker, cannot validate the implementation, or encounters failing required checks. Read the issue comment for the exact action needed before continuing.
+The fresh-context runner intentionally stops if it cannot safely return to the branch/worktree state expected for the next task. Inspect:
+
+```bash
+git status
+git branch --show-current
+```
+
+Resolve the unexpected state, return to the intended development branch, then start the runner again.
+
+### Work remains In Progress
+
+That is expected when the agent finds a blocker, cannot validate the implementation, cannot safely integrate the result, or cannot restore required local development state. Read the issue comment for the task branch and exact action needed to continue.
 
 ## Repository layout
 
@@ -265,15 +385,19 @@ That is expected when the agent finds a blocker, cannot validate the implementat
 ├── .agents/skills/       # Codex-compatible skill copies
 ├── .claude/skills/       # Claude Code-compatible skill copies
 ├── .github/workflows/    # Public repository validation
-├── scripts/              # Installer, poller, and validation tools
-├── tests/                # Poller behavior tests
+├── scripts/
+│   ├── install.sh
+│   ├── validate.sh
+│   ├── git-wait-ready-task.sh
+│   └── codex-git-queue.sh
+├── tests/                # Poller and Codex runner behavior tests
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── SECURITY.md
 └── README.md
 ```
 
-The Claude Code and Codex copies are intentionally identical. Run the validation script after changing either copy.
+The Claude Code and Codex skill copies are intentionally kept identical. Run validation after changing either copy.
 
 ## Development and validation
 
@@ -281,7 +405,7 @@ The Claude Code and Codex copies are intentionally identical. Run the validation
 ./scripts/validate.sh
 ```
 
-This checks Bash syntax, validates the skill frontmatter, confirms both agent copies match, runs ShellCheck when available, and exercises the poller with mocked GitHub responses.
+This checks Bash syntax, validates skill frontmatter, confirms the Claude/Codex skill copies match, runs ShellCheck when available, exercises the Ready poller, and tests the fresh-context Codex runner with mocked commands.
 
 ## Contributing
 
