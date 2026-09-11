@@ -13,7 +13,7 @@ usage() {
 Usage: ./scripts/install.sh [--force] /path/to/target-repository
 
 Options:
-  --force  Overwrite existing skill and poller files.
+  --force  Overwrite existing skill and queue files.
   --help   Show this help message.
 USAGE
 }
@@ -76,6 +76,7 @@ sources=(
     '.claude/skills/git-job/SKILL.md'
     '.claude/skills/git-queue/SKILL.md'
     'scripts/git-wait-ready-task.sh'
+    'scripts/codex-git-queue.sh'
 )
 
 if [[ "$force" -eq 0 ]]; then
