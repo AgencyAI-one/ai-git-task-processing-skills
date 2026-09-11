@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # AI Git Task Processing Skills validator
-# Checks mirrored skills, frontmatter, shell scripts, and poller behavior.
+# Checks mirrored skills, frontmatter, shell scripts, and queue behavior.
 # Author: Bohdan Kossak
 # X: https://x.com/BohdanDJA
 # License: MIT
@@ -56,5 +56,8 @@ done
 
 echo "[validate] Running poller tests..."
 bash tests/test-git-wait-ready-task.sh
+
+echo "[validate] Running fresh-context Codex runner tests..."
+bash tests/test-codex-git-queue.sh
 
 echo "[validate] All checks passed."
